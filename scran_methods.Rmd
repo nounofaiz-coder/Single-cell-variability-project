@@ -1,0 +1,199 @@
+---
+title: "Scran_method"
+output: html_document
+date: "2026-08-23"
+---
+
+# Appendix Y: scRNA-seq Analytical Pipeline, Normalization, and Spatial Mapping
+
+This section outlines the core analytical pipeline applied to the *Danio rerio* 10 dpf dataset. The process encompasses mathematical filtering, transcriptomic normalization via the `scran` algorithm, variance modeling for the extraction of highly variable genes (HVGs), dimensionality reduction, and targeted spatial visualization of functional gene modules.
+
+## 1. Quality Assessment and Mathematical Filtering
+
+Initial cell viability is visually assessed before applying strict mathematical thresholds to isolate true biological signals from technical artifacts (such as empty droplets, doublets, or apoptotic cells).
+
+```{r quality_filtering, message=FALSE, warning=FALSE}
+# Load required analytical packages
+library(Seurat)
+library(scran)
+library(SingleCellExperiment)
+
+# Import the previously initialized Seurat object
+seurat_10dpf <- readRDS("seurat_10dpf_backup.rds")
+
+# Generate and export violin plots for baseline quality control visualization
+plot_vln <- VlnPlot(seurat_10dpf, 
+        features = c("nFeature_RNA", "pct_counts_mt"), 
+        group.by = "fish", 
+        pt.size = 0.1)
+
+pdf("VlnPlot.RNA_pct_counts.pdf", width = 12, height = 8)
+print(plot_vln)
+dev.off()
+
+# Apply strict biological thresholds (Cut-offs) to filter out low-quality cells
+# Limits are set to exclude empty droplets/debris (< 200), doublets (> 4000), and dying cells (mt > 5%)
+seurat_filtre <- subset(seurat_10dpf, 
+                        subset = nFeature_RNA > 200 & 
+                                 nFeature_RNA < 4000 & 
+                                 pct_counts_mt < 5)
+
+# Verify the matrix dimensions to evaluate the impact of the filtering step
+print("Matrix dimensions after filtering:")
+dim(seurat_filtre)
+```
+
+##2. Normalization and Variance Modeling (scran Integration)
+To accurately compute biological variance, the data is converted and processed using the scran package. This approach utilizes cellular pre-pooling (deconvolution) to compute robust size factors, followed by a mathematical modeling of the mean-variance relationship to extract Highly Variable Genes (HVGs).
+
+```{r quality_filtering, message=FALSE, warning=FALSE}
+# Convert the filtered Seurat object to a SingleCellExperiment (SCE) framework for scran compatibility
+sce_10dpf <- as.SingleCellExperiment(seurat_filtre)
+
+# Perform cellular pre-clustering to calculate accurate size factors
+set.seed(100)
+clusters_q <- quickCluster(sce_10dpf)
+
+# Deconvolution: Compute size factors to correct for sequencing depth biases
+sce_10dpf <- computeSumFactors(sce_10dpf, cluster = clusters_q)
+
+# Apply log-normalization to stabilize the variance across the dataset
+sce_10dpf <- logNormCounts(sce_10dpf)
+summary(sizeFactors(sce_10dpf))
+
+# Model the intracellular variance using biological replicates (fish) as a blocking factor
+dec_10dpf <- modelGeneVar(sce_10dpf, block = sce_10dpf$fish)
+
+# Extract trend curve parameters for the first block (replicate 1) for visualization
+bloc_1 <- dec_10dpf$per.block[[1]] courbe_poisson_1 <- metadata(bloc_1)$trend
+
+# Generate and export a scatter plot illustrating the technical noise model
+pdf("Scran.Technical_Noise.pdf", width = 12, height = 8)
+plot(dec_10dpf$mean, dec_10dpf$total, 
+     xlab = "Mean expression (log)", 
+     ylab = "Total variance", 
+     main = "scran Model - Technical Noise",
+     pch = 16, cex = 0.5, col = "darkgrey")
+curve(courbe_poisson_1(x), col = "blue", add = TRUE, lwd = 2)
+dev.off()
+
+# Extract the top 10% of genes exhibiting the highest biological variance (HVGs)
+hvg_10dpf <- getTopHVGs(dec_10dpf, prop = 0.1)
+print(paste("Number of isolated HVGs:", length(hvg_10dpf)))
+
+# Re-inject the scran-normalized mathematical matrix directly into the Seurat object
+matrice_scran <- logcounts(sce_10dpf)
+seurat_filtre[["RNA"]]$data <- matrice_scran
+```
+
+##3. Dimensionality Reduction (PCA)
+With the biologically relevant HVGs identified, the data is scaled and subjected to Principal Component Analysis (PCA) to reduce computational complexity and highlight the primary axes of transcriptomic variation.
+
+```{r quality_filtering, message=FALSE, warning=FALSE}
+# Assign the previously extracted HVGs as the exclusive variable features in Seurat
+VariableFeatures(seurat_filtre) <- hvg_10dpf
+
+# Center and scale the data (applied solely to HVGs to optimize computational efficiency)
+seurat_filtre <- ScaleData(seurat_filtre, features = VariableFeatures(seurat_filtre))
+
+# Execute Principal Component Analysis (PCA)
+seurat_filtre <- RunPCA(seurat_filtre, features = VariableFeatures(seurat_filtre))
+
+# Visualize and export the Elbow Plot to determine the optimal number of principal components
+elbow  <- ElbowPlot(seurat_filtre, ndims = 40)
+pdf("ElbowPlot.pdf", width = 12, height = 8)
+print(elbow)
+dev.off()
+```
+
+##4. Functional Enrichment Analysis (Gene Ontology)
+The isolated biological signal (HVGs) is evaluated against the Danio rerio reference genome to identify significantly over-represented biological processes using Gene Ontology (GO).
+
+```{r quality_filtering, message=FALSE, warning=FALSE}
+# Load libraries required for genome annotation and functional enrichment
+library(clusterProfiler)
+library(org.Dr.eg.db)
+library(ggplot2)
+
+# Extract the HVG list
+hvg_genes <- VariableFeatures(seurat_filtre)
+
+# Perform Gene Ontology (GO) enrichment analysis targeting Biological Processes (BP)
+ego_hvg <- enrichGO(
+  gene          = hvg_genes,
+  keyType       = "SYMBOL",
+  OrgDb         = org.Dr.eg.db,
+  ont           = "BP", 
+  pAdjustMethod = "BH", 
+  universe      = dec_10dpf@rownames,
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.05
+)
+
+# Visualize and export the 15 most significant functional groups
+GO_Plot <- dotplot(ego_hvg, showCategory = 15) + ggtitle("Biological functions for the HVG genes")
+pdf("GOPlot_HVG_genes.pdf", width = 12, height = 8)
+print(GO_Plot)
+dev.off()
+```
+
+##5. Multi-Module Analysis and Spatial Mapping (UMAP)
+
+Specific functional modules (e.g., Growth, Sensory Perception, Regeneration) are defined programmatically. Cells are then scored based on the expression of these networks, and the resulting biological signatures are projected onto a 2D spatial approximation (UMAP) to evaluate tissue compartmentalization.
+
+```{r quality_filtering, message=FALSE, warning=FALSE}
+# Convert the GO enrichment results to a data frame for programmatic mining
+ego_df <- as.data.frame(ego_hvg)
+
+# --- Define and Filter the Growth Module ---
+growth_terms <- c("developmental growth", "growth")
+raw_growth_genes <- ego_df[ego_df$Description %in% growth_terms, "geneID"]
+split_growth_genes <- unique(unlist(strsplit(raw_growth_genes, "/")))
+matching_growth_genes <- intersect(split_growth_genes, hvg_genes)
+
+# --- Define and Filter the Sensory Module ---
+sensory_terms <- c("sensory organ morphogenesis", "retina development in camera-type eye", 
+                   "sensory perception", "visual perception", "sensory perception of light stimulus")
+raw_sensory_genes <- ego_df[ego_df$Description %in% sensory_terms, "geneID"]
+split_sensory_genes <- unique(unlist(strsplit(raw_sensory_genes, "/")))
+matching_sensory_genes <- intersect(split_sensory_genes, hvg_genes)
+
+# --- Compute Targeted Module Scores ---
+# Scores are added directly to the Seurat object metadata
+seurat_filtre <- AddModuleScore(seurat_filtre, features = list(matching_growth_genes), name = "Score_Growth")
+seurat_filtre <- AddModuleScore(seurat_filtre, features = list(matching_sensory_genes), name = "Score_Sensory")
+
+# --- Anatomical Distribution Analysis (Violin Plots) ---
+vln_growth <- VlnPlot(seurat_filtre, features = "Score_Growth1", group.by = "zebrafish_anatomy_ontology_class", pt.size = 0) + ggtitle("Anatomical Distribution of Growth Score")
+vln_sensory <- VlnPlot(seurat_filtre, features = "Score_Sensory1", group.by = "zebrafish_anatomy_ontology_class", pt.size = 0) + ggtitle("Anatomical Distribution of Sensory Score")
+
+pdf("VlnPlot.Growth.pdf", width = 18, height = 8)
+print(vln_growth)
+dev.off()
+
+pdf("VlnPlot.Sensory.pdf", width = 18, height = 8)
+print(vln_sensory)
+dev.off()
+
+# --- Latent Space Spatial Visualization (UMAP) ---
+# Compute the UMAP projection based on the first 20 principal components
+seurat_filtre <- RunUMAP(seurat_filtre, dims = 1:20)
+
+# Map the Growth score onto the UMAP coordinates (cold blue gradient)
+umap_growth <- FeaturePlot(seurat_filtre, features = "Score_Growth1", reduction = "umap", cols = c("lightgrey", "blue")) + ggtitle("Expression of Growth Module on UMAP")
+
+# Map the Sensory score onto the UMAP coordinates (deep purple gradient)
+umap_sensory <- FeaturePlot(seurat_filtre, features = "Score_Sensory1", reduction = "umap", cols = c("lightgrey", "purple")) + ggtitle("Expression of Sensory Module on UMAP")
+
+pdf("UMAP.Growth.pdf", width = 18, height = 8)
+print(umap_growth)
+dev.off()
+
+pdf("UMAP.Sensory.pdf", width = 18, height = 8)
+print(umap_sensory)
+dev.off()
+```
+
+
+
+
