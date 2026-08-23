@@ -1,0 +1,41 @@
+---
+title: "UMAP"
+output: html_document
+date: "2026-08-23"
+---
+
+## 6. Spatial Visualization and Regeneration Module Mapping (UMAP)
+
+To evaluate the cellular heterogeneity and spatial compartmentalization of the transcriptomic signal, a non-linear dimensionality reduction technique, Uniform Manifold Approximation and Projection (UMAP), is applied. Based on prior principal component analysis (PCA), the first 23 principal components are retained to construct the topological map. Subsequently, the functional module corresponding to tissue regeneration is projected onto this latent space.
+
+```{r umap_visualization, message=FALSE, warning=FALSE}
+# Load the pre-processed Seurat object containing scaled data and calculated module scores
+seurat_filtre <- readRDS("seurat_final_pre_umap.rds")
+
+# Execute Uniform Manifold Approximation and Projection (UMAP) 
+# The dimensional space is strictly limited to the first 23 principal components (PCs) 
+# as determined by previous variance analyses (Elbow plot)
+seurat_filtre <- RunUMAP(seurat_filtre, reduction = "pca", dims = 1:23)
+
+# Generate a base spatial projection colored by anatomically annotated cell types
+base_umap <- DimPlot(seurat_filtre, 
+        reduction = "umap", 
+        group.by = "zebrafish_anatomy_ontology_class", 
+        label = TRUE, 
+        repel = TRUE) + 
+  ggtitle("UMAP Projection - Anatomical Ontology")
+
+# Overlay the previously computed regeneration score onto the UMAP coordinates
+# A localized red color gradient is utilized to highlight cellular subpopulations 
+# exhibiting high expression of the regeneration gene network
+umap_regen <- FeaturePlot(seurat_filtre, 
+            features = "Score_Regeneration1", 
+            reduction = "umap", 
+            cols = c("lightgrey", "red")) + 
+  ggtitle("Expression of the Regeneration module on UMAP")
+
+# Render and export the functional UMAP projection
+pdf("UMAP.Regen.pdf", width = 18, height = 8)
+print(umap_regen)
+dev.off()
+```
