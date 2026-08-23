@@ -22,7 +22,12 @@ scipy <- import("scipy.sparse", convert = FALSE)
 # Load the raw transcriptomic data stored in AnnData format (.h5ad)
 adata <- ad$read_h5ad("zf_atlas_10dpf_v1_release.h5ad")
 print(adata)
+```
 
+## 2. Metadata Extraction and Matrix Transformation
+The metadata containing cellular annotations is extracted. Subsequently, the count matrix is transposed. This structural transposition is mandatory because Python (AnnData) stores matrices as (cells x genes), whereas R (Seurat) strictly requires a (genes x cells) format.
+
+```{r setup, message=FALSE, warning=FALSE}
 # Extract metadata (cell annotations) and convert to an R data frame
 metadata <- py_to_r(adata$obs)
 dim(metadata)        
@@ -39,7 +44,12 @@ cell_names <- py_to_r(adata$obs_names$to_list())
 # Assign the extracted gene and cell names to the R count matrix
 rownames(counts_matrix) <- gene_names
 colnames(counts_matrix) <- cell_names
+```
 
+## 3. Seurat Object Creation and Verification
+With the correctly formatted matrix and metadata, the Seurat object is initialized. A series of exploratory commands are then executed to verify the integrity of the data structure, the distribution of biological replicates, and the sparsity of the transcriptomic signal.
+
+```{r setup, message=FALSE, warning=FALSE}
 # Construct the Seurat object 
 seurat_10dpf <- CreateSeuratObject(counts = counts_matrix, meta.data = metadata)
 
