@@ -1,54 +1,71 @@
+# ==============================================================================
+# DATA IMPORT AND SEURAT OBJECT INITIALIZATION
+# ==============================================================================
+
+# Load required libraries for data manipulation, single-cell analysis, and Python interoperability
 library(tidyverse)
 library(Seurat)
 library(reticulate)
 
-#Loading the file via Python
+# Import required Python modules using reticulate (without automatic conversion to preserve complex structures)
 ad <- import("anndata", convert = FALSE)
 scipy <- import("scipy.sparse", convert = FALSE)
+
+# Load the raw transcriptomic data stored in AnnData format (.h5ad)
 adata <- ad$read_h5ad("zf_atlas_10dpf_v1_release.h5ad")
 print(adata)
 
-#extraction of metadata to R
+# Extract metadata (cell annotations) from the AnnData object and convert it to an R data frame
 metadata <- py_to_r(adata$obs)
-dim(metadata)        #name rows and columns 
+dim(metadata)        # Verify the dimensions (rows and columns) of the metadata
 head(metadata[, 1:4])
 
-#Matrix Extraction (Counts)
+# Extract the expression count matrix. 
+# Transposition is required because Python/AnnData stores matrices as (cells x genes), 
+# whereas R/Seurat strictly requires a (genes x cells) structural format.
 X_transposed <- adata$X$transpose()
 counts_matrix <- py_to_r(X_transposed)
-# request to Python to transform the index into a pure list (.to_list)
+
+# Request Python to transform the indices into pure lists, then convert them to R vectors
 gene_names <- py_to_r(adata$var_names$to_list())
 cell_names <- py_to_r(adata$obs_names$to_list())
 
-#We assign the proper names to the matrix
+# Assign the extracted gene and cell names to the R count matrix
 rownames(counts_matrix) <- gene_names
 colnames(counts_matrix) <- cell_names
 
-#The final assembly in Seurat
+# Construct the Seurat object using the transposed count matrix and the extracted metadata
 seurat_10dpf <- CreateSeuratObject(counts = counts_matrix, meta.data = metadata)
 
-#Final Verification Line
+# ==============================================================================
+# DATA VERIFICATION AND EXPLORATION
+# ==============================================================================
+
+# Final verification of the newly created Seurat object dimensions and size
 print(seurat_10dpf)
 
+# Inspect the first few rows and columns of the matrix and metadata for quality control
 counts_matrix[1:10, 1:5]
 colnames(metadata)
 head(rownames(metadata), 10)
 
-#Look for the details names
+# Explore the available metadata categories provided by the dataset authors
 colnames(seurat_10dpf@meta.data)
-#How many sample + typecell for each one 
+
+# Quantify the number of cells originating from each individual biological replicate (fish)
 table(seurat_10dpf$fish)
 
-#list all the tissues present and count the number of cells in each one
+# List all annotated tissues present in the dataset and quantify the cellular population for each
 table(seurat_10dpf$zebrafish_anatomy_ontology_class)
 
-#Crosses the fish (rows) with the cell types (columns)
+# Generate a cross-tabulation to evaluate the distribution of cell types across the different biological replicates
 table(seurat_10dpf$fish, seurat_10dpf$zebrafish_anatomy_ontology_class)
 
-#Check the computer format of the matrix 
+# Verify the computational format of the count matrix (ensuring it is a sparse matrix structure, e.g., dgCMatrix)
 class(seurat_10dpf[["RNA"]]$counts)
 
-#Presence of raw accounts (UMI accounts) and technical noise.
+# Inspect raw Unique Molecular Identifier (UMI) counts and potential technical noise for a broadly expressed gene (actb1)
 seurat_10dpf[["RNA"]]$counts["actb1", 1:5]
-#Biological specificity and the zero rate (sparsity)
+
+# Inspect counts for a highly specific gene (rho) to evaluate biological specificity and the high zero rate (sparsity)
 seurat_10dpf[["RNA"]]$counts["rho", 1:5]
