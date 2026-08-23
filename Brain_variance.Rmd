@@ -1,0 +1,300 @@
+---
+title: "Brain_variance"
+output: html_document
+date: "2026-08-23"
+---
+
+# Appendix Z: Targeted CNS Subsetting, Local Variance Modeling, and Inter-Tissue Canalization Analysis
+
+This final section of the pipeline focuses on the isolation of the Central Nervous System (CNS) from a single biological replicate (TDR71) to avoid inter-individual confounding factors. It details the local variance modeling, functional characterization, and spatial projection of the CNS subset. Finally, it executes the comparative inter-tissue analysis to evaluate the canalization of gene expression variability across distinct anatomical structures.
+
+## 1. CNS Isolation and Local Variance Modeling
+
+Targeted neural cell types are extracted from the global dataset. The isolated subset undergoes a dedicated normalization and variance modeling procedure to accurately capture intra-tissue stochasticity.
+
+```{r cns_isolation, message=FALSE, warning=FALSE}
+# Load required analytical packages
+library(Seurat)
+library(scran)
+library(SingleCellExperiment)
+library(ggplot2)
+library(dplyr)
+library(clusterProfiler)
+library(org.Dr.eg.db)
+
+# Define the targeted central nervous system (CNS) cell types based on anatomical ontology
+cns_cell_types <- c(
+  "neuronal stem cell",
+  "glial cell",
+  "radial glial cell", 
+  "oligodendrocyte",
+  "midbrain interneuron",
+  "neuroblast"
+)
+
+# Subset the global Seurat object to isolate CNS cells from a single biological replicate (TDR71)
+seurat_cns_tdr71 <- subset(
+  x = seurat_filtre, 
+  subset = fish == "TDR71" & zebrafish_anatomy_ontology_class %in% cns_cell_types
+)
+
+# Convert the localized subset to the SingleCellExperiment (SCE) framework
+sce_cns_tdr71 <- as.SingleCellExperiment(seurat_cns_tdr71)
+
+# Perform local Quality Control and Normalization specifically for the CNS subset
+set.seed(100)
+clusters_cns <- quickCluster(sce_cns_tdr71)
+sce_cns_tdr71 <- computeSumFactors(sce_cns_tdr71, cluster = clusters_cns)
+sce_cns_tdr71 <- logNormCounts(sce_cns_tdr71)
+
+# Model local gene expression variance within the isolated neural tissue
+dec_cns_tdr71 <- modelGeneVar(sce_cns_tdr71)
+
+# Extract local Highly Variable Genes (HVGs) representing the top 10% of biological variance
+hvg_cns_tdr71 <- getTopHVGs(dec_cns_tdr71, prop = 0.10)
+VariableFeatures(seurat_cns_tdr71) <- hvg_cns_tdr71
+
+print(paste("Number of cells in the CNS subset:", ncol(seurat_cns_tdr71)))
+print(paste("Number of local HVGs identified (top 10%):", length(hvg_cns_tdr71)))
+
+# Visualize and export the localized scran variance model
+pdf("Scran_Variability_TDR71.pdf", width = 12, height = 8)
+plot(dec_cns_tdr71$mean, dec_cns_tdr71$total, 
+     xlab = "Mean expression (log)", 
+     ylab = "Total variance", 
+     main = "scran Model - CNS Local Variability (TDR71)",
+     pch = 16, cex = 0.5, col = "darkgrey")
+curve(metadata(dec_cns_tdr71)$trend(x), col = "blue", add = TRUE, lwd = 2)
+dev.off()
+```
+
+##2. Functional Characterization (Gene Ontology) of Local CNS Variability
+To interpret the biological significance of the local variance, a Gene Ontology (GO) enrichment analysis is performed strictly on the CNS HVGs.
+
+```{r cns_isolation, message=FALSE, warning=FALSE}
+# Extract the previously defined CNS HVGs and define the specific background universe
+hvg_cns_genes <- VariableFeatures(seurat_cns_tdr71)
+cns_universe <- rownames(seurat_cns_tdr71)
+
+# Perform GO enrichment targeting Biological Processes (BP)
+ego_cns <- enrichGO(
+  gene          = hvg_cns_genes,
+  keyType       = "SYMBOL",
+  OrgDb         = org.Dr.eg.db,
+  ont           = "BP",                 
+  pAdjustMethod = "BH",                 
+  universe      = cns_universe,         
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.05
+)
+
+# Export the raw enrichment results as a tabular text file for record-keeping
+cns_txt = data.frame(ego_cns)
+cns_txt1 = data.frame(cns_txt$ID, cns_txt$p.adjust)
+write.table(cns_txt1, file="cns_GO_BP.txt", row.names=FALSE, col.names=FALSE, sep="\t", quote=FALSE)
+
+# Generate and export the functional enrichment dotplot if significant terms are identified
+if (!is.null(ego_cns) && nrow(as.data.frame(ego_cns)) > 0) {
+  dotplot_cns <- dotplot(ego_cns, showCategory = 15) + 
+    ggtitle("Functional Enrichment of Local CNS HVGs (TDR71)")
+  print(dotplot_cns)
+  
+  pdf("GO_Enrichment_CNS_Local.pdf", width = 12, height = 8)
+  print(dotplot_cns)
+  dev.off()
+} else {
+  print("No statistically significant GO terms found.")
+}
+```
+
+##3. Local Dimensionality Reduction & Spatial Mapping
+The CNS subset undergoes an independent Principal Component Analysis (PCA) and spatial projection (UMAP) to visualize the intra-tissue cellular heterogeneity.
+
+```{r cns_isolation, message=FALSE, warning=FALSE}
+# Normalize and scale the data specifically for the local neural HVGs
+seurat_cns_tdr71 <- NormalizeData(seurat_cns_tdr71)
+seurat_cns_tdr71 <- ScaleData(object = seurat_cns_tdr71, features = hvg_cns_tdr71)
+
+# Execute Principal Component Analysis (PCA) restricted to the local subset
+seurat_cns_tdr71 <- RunPCA(object = seurat_cns_tdr71, features = hvg_cns_tdr71, npcs = 15)
+
+# Compute the UMAP projection based on the top 10 local PCs
+seurat_cns_tdr71 <- RunUMAP(object = seurat_cns_tdr71, dims = 1:10)
+
+# Visualize and export the localized UMAP colored by neural cell subtypes
+umap_cns_local <- DimPlot(
+  object = seurat_cns_tdr71, 
+  reduction = "umap", 
+  group.by = "zebrafish_anatomy_ontology_class", 
+  label = TRUE, 
+  repel = TRUE,
+  pt.size = 2
+) + ggtitle("Local UMAP: CNS Cell Types (TDR71)")
+
+ggsave("UMAP_CNS_Cell_Types_TDR71.pdf", plot = umap_cns_local, width = 12, height = 8)
+```
+
+##4. Intra-CNS Variability Exploration
+Biological variance is modeled and compared internally across the distinct neural cell types to quantify differentiation plasticity.
+
+```{r cns_isolation, message=FALSE, warning=FALSE}
+# Model gene variance blocked by specific neural cell types
+dec_cns_per_type <- modelGeneVar(sce_cns_tdr71, block = sce_cns_tdr71$zebrafish_anatomy_ontology_class)
+cns_blocks <- dec_cns_per_type$per.block
+bio_var_list_cns <- list()
+
+# Extract and format the variance data for each cell type
+for (cell_type in names(cns_blocks)) {
+  bio_var_list_cns[[cell_type]] <- data.frame(
+    Gene = rownames(cns_blocks[[cell_type]]),
+    Bio_Variance = cns_blocks[[cell_type]]$bio,
+    Cell_Type = cell_type
+  )
+}
+df_cns_bio_var <- do.call(rbind, bio_var_list_cns)
+
+# Generate and export boxplots illustrating variance distributions per neural subtype
+boxplot_cns_types <- ggplot(df_cns_bio_var, aes(x = Cell_Type, y = Bio_Variance, fill = Cell_Type)) +
+  geom_boxplot(outlier.size = 0.5, alpha = 0.7) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    title = "Biological Variability Across CNS Cell Types",
+    x = "CNS Cell Type", 
+    y = "Biological Variance (scran 'bio')"
+  )
+
+ggsave("Biological_variability_CNS.pdf", plot = boxplot_cns_types, width = 12, height = 8)
+```
+
+##5. Peripheral Normalization & Inter-Tissue Canalization Analysis
+To evaluate inter-tissue expression constraints, peripheral tissues (liver, fin, muscle) are isolated and normalized. A dynamic comparative analysis is then executed to track the variance of focal HVGs across non-target tissues, validating the canalization hypothesis.
+
+```{r cns_isolation, message=FALSE, warning=FALSE}
+library(ggpubr) # Required for non-parametric statistical annotations
+
+# Isolate peripheral tissues from the same biological replicate
+peripheral_tissues <- c("liver", "fin", "muscle")
+seurat_periph <- subset(seurat_filtre, subset = fish == "TDR71" & zebrafish_anatomy_ontology_class %in% peripheral_tissues)
+sce_periph <- as.SingleCellExperiment(seurat_periph)
+
+# Perform strict Quality Control and Normalization for peripheral cell populations
+set.seed(100)
+clusters_periph <- quickCluster(sce_periph)
+sce_periph <- computeSumFactors(sce_periph, cluster = clusters_periph)
+sce_periph <- logNormCounts(sce_periph)
+
+# Model variance utilizing the specific peripheral tissue as a blocking factor
+dec_periph <- modelGeneVar(sce_periph, block = sce_periph$zebrafish_anatomy_ontology_class)
+block_stats <- dec_periph$per.block
+
+# Extract the top 10% HVGs independently for each peripheral tissue
+indiv_hvgs <- lapply(block_stats, function(x) {
+  top_genes <- getTopHVGs(x, prop = 0.10)
+  x[top_genes, "bio", drop = FALSE]
+})
+
+# Compile the global list of focal HVGs by appending the Brain (CNS) subset
+indiv_hvgs[["Brain (CNS)"]] <- dec_cns_tdr71[hvg_cns_tdr71, "bio", drop = FALSE]
+
+# ------------------------------------------------------------------------------
+# Dynamic Generation of Inter-Tissue Statistical Boxplots
+# ------------------------------------------------------------------------------
+tissues_to_plot <- c("Brain (CNS)", "liver", "fin", "muscle")
+
+# Define strict statistical comparisons (Brain vs. all other peripheral tissues)
+my_comparisons <- list(
+  c("Brain (CNS)", "liver"),
+  c("Brain (CNS)", "fin"),
+  c("Brain (CNS)", "muscle")
+)
+
+# Iterate over each tissue to evaluate the constraint of its specific HVGs elsewhere
+for (source_tissue in tissues_to_plot) {
+  
+  # 1. Isolate focal HVGs for the currently evaluated tissue
+  current_hvgs <- rownames(indiv_hvgs[[source_tissue]])
+  comparison_list <- list()
+  
+  # 2. Extract matching variance values from the Brain (CNS) dataset
+  cns_matched <- rownames(dec_cns_tdr71)[rownames(dec_cns_tdr71) %in% current_hvgs]
+  comparison_list[["Brain (CNS)"]] <- data.frame(
+    gene = cns_matched,
+    Variance = dec_cns_tdr71$bio[rownames(dec_cns_tdr71) %in% current_hvgs],
+    Tissue = "Brain (CNS)",
+    HVG_Source = rep(source_tissue, length(cns_matched))
+  )
+  
+  # 3. Extract matching variance values from the Peripheral datasets
+  for (periph_tiss in peripheral_tissues) {
+    if (periph_tiss %in% names(block_stats)) {
+      periph_matched <- rownames(block_stats[[periph_tiss]])[rownames(block_stats[[periph_tiss]]) %in% current_hvgs]
+      comparison_list[[periph_tiss]] <- data.frame(
+        gene = periph_matched,
+        Variance = block_stats[[periph_tiss]]$bio[rownames(block_stats[[periph_tiss]]) %in% current_hvgs],
+        Tissue = periph_tiss,
+        HVG_Source = rep(source_tissue, length(periph_matched))
+      )
+    }
+  }
+  
+  # 4. Merge all targeted variance data into a unified dataframe
+  df_tissue_plot <- do.call(rbind, comparison_list)
+  
+  # 5. Generate independent boxplots with structured statistical annotations
+  p <- ggplot(df_tissue_plot, aes(x = Tissue, y = Variance, fill = Tissue)) +
+    geom_boxplot(outlier.size = 0.5, alpha = 0.8) +
+    theme_bw() +
+    
+    # Expand the y-axis ceiling to properly accommodate staggered significance brackets
+    coord_cartesian(ylim = c(-0.2, 3)) + 
+    
+    # Apply Wilcoxon rank-sum test with forced staggered y-positions for readability
+    stat_compare_means(
+      comparisons = my_comparisons,
+      method = "wilcox.test",
+      label = "p.signif",
+      label.y = c(1.8, 2.0, 2.2), 
+      vjust = 0.5
+    ) +
+    
+    labs(
+      title = paste("Variability of", source_tissue, "HVGs Across Tissues"),
+      subtitle = paste("Assessing the canalization of", source_tissue, "transcriptomic networks"),
+      x = "Tissue Evaluated", 
+      y = paste("Biological Variance of", source_tissue, "HVGs"),
+      caption = "Wilcoxon rank-sum test vs Brain (CNS) \n ns: p > 0.05 | *: p <= 0.05 | **: p <= 0.01 | ***: p <= 0.001 | ****: p <= 0.0001"
+    ) +
+    theme(
+      plot.title = element_text(size = 18, face = "bold", margin = margin(b = 10)),
+      plot.subtitle = element_text(size = 14, margin = margin(b = 15)),
+      axis.title = element_text(size = 14, face = "bold"),
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 13, color = "black"),
+      axis.text.y = element_text(size = 12, color = "black"),
+      legend.position = "none",
+      plot.caption = element_text(hjust = 0, face = "italic", size = 12, color = "gray30", margin = margin(t = 15))
+    )
+  
+  print(p)
+  
+  # 6. Sanitize filenames and export the final visualizations to PDF
+  safe_filename <- gsub(" |\\(\vert{}\\)", "_", source_tissue) 
+  safe_filename <- gsub("__", "_", safe_filename)
+  
+  ggsave(
+    filename = paste0("Variability_HVG_", safe_filename, "_Across_Tissues.pdf"), 
+    plot = p, 
+    width = 10, 
+    height = 7, 
+    device = "pdf"
+  )
+}
+```
+
+
+
+
+
+
+
+
