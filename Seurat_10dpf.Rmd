@@ -1,0 +1,74 @@
+---
+title: "Seurat"
+output: html_document
+date: "2026-08-21"# Appendix X: scRNA-seq Data Import and Seurat Object Initialization
+
+The following script details the computational pipeline used to import raw single-cell transcriptomic data (scRNA-seq) from the *Danio rerio* 10 dpf model. Since the original dataset is provided in a Python-based AnnData format (`.h5ad`), the `reticulate` package is utilized to bridge the Python and R environments. This ensures a lossless conversion of the sparse matrices and metadata prior to their integration into the Seurat analytical ecosystem.
+
+## 1. Environment Setup and Data Loading
+
+Required libraries are loaded to enable data manipulation, single-cell analysis, and Python interoperability. The raw dataset is then imported without automatic conversion to preserve its complex structure.
+
+```{r setup, message=FALSE, warning=FALSE}
+# Load required libraries
+library(tidyverse)
+library(Seurat)
+library(reticulate)
+
+# Import required Python modules using reticulate 
+ad <- import("anndata", convert = FALSE)
+scipy <- import("scipy.sparse", convert = FALSE)
+
+# Load the raw transcriptomic data stored in AnnData format (.h5ad)
+adata <- ad$read_h5ad("zf_atlas_10dpf_v1_release.h5ad")
+print(adata)
+
+# Extract metadata (cell annotations) and convert to an R data frame
+metadata <- py_to_r(adata$obs)
+dim(metadata)        
+head(metadata[, 1:4])
+
+# Extract and transpose the expression count matrix
+X_transposed <- adata$X$transpose()
+counts_matrix <- py_to_r(X_transposed)
+
+# Request Python to transform the indices into pure lists, then convert them to R vectors
+gene_names <- py_to_r(adata$var_names$to_list())
+cell_names <- py_to_r(adata$obs_names$to_list())
+
+# Assign the extracted gene and cell names to the R count matrix
+rownames(counts_matrix) <- gene_names
+colnames(counts_matrix) <- cell_names
+
+# Construct the Seurat object 
+seurat_10dpf <- CreateSeuratObject(counts = counts_matrix, meta.data = metadata)
+
+# Verify the Seurat object dimensions and size
+print(seurat_10dpf)
+
+# Inspect the first few rows and columns of the matrix and metadata for quality control
+counts_matrix[1:10, 1:5]
+colnames(metadata)
+head(rownames(metadata), 10)
+
+# Explore the available metadata categories provided by the dataset authors
+colnames(seurat_10dpf@meta.data)
+
+# Quantify the number of cells originating from each individual biological replicate (fish)
+table(seurat_10dpf$fish)
+
+# List all annotated tissues present in the dataset and quantify the cellular population for each
+table(seurat_10dpf$zebrafish_anatomy_ontology_class)
+
+# Generate a cross-tabulation to evaluate the distribution of cell types across biological replicates
+table(seurat_10dpf$fish, seurat_10dpf$zebrafish_anatomy_ontology_class)
+
+# Verify the computational format of the count matrix (ensuring it is a sparse matrix structure)
+class(seurat_10dpf[["RNA"]]$counts)
+
+# Inspect raw UMI counts and potential technical noise for a broadly expressed gene (actb1)
+seurat_10dpf[["RNA"]]$counts["actb1", 1:5]
+
+# Inspect counts for a highly specific gene (rho) to evaluate biological specificity and sparsity
+seurat_10dpf[["RNA"]]$counts["rho", 1:5]```
+
